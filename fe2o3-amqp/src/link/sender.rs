@@ -95,7 +95,7 @@ use fe2o3_amqp_types::messaging::{AmqpSequence, AmqpValue, Batch, Body, Data, In
 ///     .unwrap();
 /// ```
 pub struct Sender {
-    pub(crate) inner: SenderInner<SenderLink<Target>>,
+    pub inner: SenderInner<SenderLink<Target>>,
 }
 
 impl std::fmt::Debug for Sender {
