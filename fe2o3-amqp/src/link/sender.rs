@@ -95,7 +95,7 @@ use fe2o3_amqp_types::messaging::{AmqpSequence, AmqpValue, Batch, Body, Data, In
 ///     .unwrap();
 /// ```
 pub struct Sender {
-    pub inner: SenderInner<SenderLink<Target>>,
+    pub(crate) inner: SenderInner<SenderLink<Target>>,
 }
 
 impl std::fmt::Debug for Sender {
@@ -368,13 +368,13 @@ impl Sender {
     ///
     /// This function is cancel-safe. See [#22](https://github.com/minghuaw/fe2o3-amqp/issues/22)
     /// for more details.
-    pub async fn send<T: SerializableBody>(
+    pub async fn send(
         &mut self,
-        sendable: impl Into<Sendable<T>>,
+        sendable: String,
     ) -> Result<Outcome, SendError> {
         let fut = self
             .inner
-            .send_with_state::<T, SendError>(sendable.into(), None, false)
+            .send_with_state::<SendError>(sendable.into(), None, false)
             .await
             .map(DeliveryFut::from)?;
         fut.await
@@ -400,9 +400,9 @@ impl Sender {
     ///
     /// This simply wraps [`send`](#method.send) inside a [`tokio::time::timeout`]
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn send_with_timeout<T: SerializableBody>(
+    pub async fn send_with_timeout(
         &mut self,
-        sendable: impl Into<Sendable<T>>,
+        sendable: String,
         duration: Duration,
     ) -> Result<Result<Outcome, SendError>, Elapsed> {
         timeout(duration, self.send(sendable)).await
@@ -422,10 +422,10 @@ impl Sender {
     /// ```
     pub async fn send_batchable<T: SerializableBody>(
         &mut self,
-        sendable: impl Into<Sendable<T>>,
+        sendable: String,
     ) -> Result<DeliveryFut<Result<Outcome, SendError>>, SendError> {
         self.inner
-            .send_with_state(sendable.into(), None, true)
+            .send_with_state(sendable, None, true)
             .await
             .map(DeliveryFut::from)
     }
@@ -614,33 +614,22 @@ where
         + Send
         + Sync,
 {
-    pub(crate) async fn send_with_state<T, E>(
+    pub(crate) async fn send_with_state<E>(
         &mut self,
-        sendable: Sendable<T>,
+        sendable: String,
         state: Option<DeliveryState>,
         batchable: bool,
     ) -> Result<Settlement, E>
     where
-        T: SerializableBody,
         E: From<L::TransferError> + From<serde_amqp::Error>,
     {
-        use bytes::BufMut;
-        use serde::Serialize;
-        use serde_amqp::ser::Serializer;
+        use bytes::{BufMut};
 
-        let Sendable {
-            message,
-            message_format,
-            settled,
-        } = sendable;
-
-        // serialize message
-        let mut payload = BytesMut::new();
-        let mut serializer = Serializer::from((&mut payload).writer());
-        Serializable(message).serialize(&mut serializer)?;
+        let mut payload = BytesMut::with_capacity(1024);
+        payload.put(sendable.as_bytes());
         let payload = payload.freeze();
 
-        self.send_payload(payload, message_format, settled, state, batchable)
+        self.send_payload(payload, 0, None, state, batchable)
             .await
     }
 
