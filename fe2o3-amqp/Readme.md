@@ -1,3 +1,4 @@
+# Please do not use this, go to the real author repository instead : https://github.com/minghuaw/fe2o3-amqp
 # fe2o3-amqp
 
 A rust implementation of AMQP 1.0 protocol based on serde and tokio.
