@@ -368,13 +368,27 @@ impl Sender {
     ///
     /// This function is cancel-safe. See [#22](https://github.com/minghuaw/fe2o3-amqp/issues/22)
     /// for more details.
-    pub async fn send(
+    pub async fn send<T: SerializableBody>(
+        &mut self,
+        sendable: impl Into<Sendable<T>>,
+    ) -> Result<Outcome, SendError> {
+        let fut = self
+            .inner
+            .send_with_state::<T, SendError>(sendable.into(), None, false)
+            .await
+            .map(DeliveryFut::from)?;
+        fut.await
+    }
+
+
+    /// Same as send but for string raw
+    pub async fn send_string_raw(
         &mut self,
         sendable: String,
     ) -> Result<Outcome, SendError> {
         let fut = self
             .inner
-            .send_with_state::<SendError>(sendable.into(), None, false)
+            .send_with_state_string_raw::<SendError>(sendable.into(), None, false)
             .await
             .map(DeliveryFut::from)?;
         fut.await
@@ -400,12 +414,25 @@ impl Sender {
     ///
     /// This simply wraps [`send`](#method.send) inside a [`tokio::time::timeout`]
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn send_with_timeout(
+    pub async fn send_with_timeout<T: SerializableBody>(
+        &mut self,
+        sendable: impl Into<Sendable<T>>,
+        duration: Duration,
+    ) -> Result<Result<Outcome, SendError>, Elapsed> {
+        timeout(duration, self.send(sendable)).await
+    }
+
+
+    /// Send a raw string message and wait for acknowledgement (disposition) with a timeout.
+    ///
+    /// This simply wraps [`send`](#method.send) inside a [`tokio::time::timeout`]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn send_string_raw_with_timeout(
         &mut self,
         sendable: String,
         duration: Duration,
     ) -> Result<Result<Outcome, SendError>, Elapsed> {
-        timeout(duration, self.send(sendable)).await
+        timeout(duration, self.send_string_raw(sendable)).await
     }
 
     /// Send a message without waiting for the acknowledgement.
@@ -422,10 +449,10 @@ impl Sender {
     /// ```
     pub async fn send_batchable<T: SerializableBody>(
         &mut self,
-        sendable: String,
+        sendable: impl Into<Sendable<T>>,
     ) -> Result<DeliveryFut<Result<Outcome, SendError>>, SendError> {
         self.inner
-            .send_with_state(sendable, None, true)
+            .send_with_state(sendable.into(), None, true)
             .await
             .map(DeliveryFut::from)
     }
@@ -614,7 +641,37 @@ where
         + Send
         + Sync,
 {
-    pub(crate) async fn send_with_state<E>(
+    pub(crate) async fn send_with_state<T, E>(
+        &mut self,
+        sendable: Sendable<T>,
+        state: Option<DeliveryState>,
+        batchable: bool,
+    ) -> Result<Settlement, E>
+    where
+        T: SerializableBody,
+        E: From<L::TransferError> + From<serde_amqp::Error>,
+    {
+        use bytes::BufMut;
+        use serde::Serialize;
+        use serde_amqp::ser::Serializer;
+
+        let Sendable {
+            message,
+            message_format,
+            settled,
+        } = sendable;
+
+        // serialize message
+        let mut payload = BytesMut::new();
+        let mut serializer = Serializer::from((&mut payload).writer());
+        Serializable(message).serialize(&mut serializer)?;
+        let payload = payload.freeze();
+
+        self.send_payload(payload, message_format, settled, state, batchable)
+            .await
+    }
+
+    pub(crate) async fn send_with_state_string_raw<E>(
         &mut self,
         sendable: String,
         state: Option<DeliveryState>,
@@ -623,8 +680,9 @@ where
     where
         E: From<L::TransferError> + From<serde_amqp::Error>,
     {
-        use bytes::{BufMut};
+        use bytes::BufMut;
 
+        // serialize message
         let mut payload = BytesMut::with_capacity(1024);
         payload.put(sendable.as_bytes());
         let payload = payload.freeze();
